@@ -1,0 +1,217 @@
+image: openjdk:17-jdk
+
+
+variables:
+  PROJECT_NAME: "AVTOBYS KOTLIN DRIVER BOARD APP"
+  # Disable the Gradle daemon for Continuous Integration servers as correctness
+  # is usually a priority over speed in CI environments. Using a fresh
+  # runtime for each build is more reliable since the runtime is completely
+  # isolated from any previous builds.
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  CI_SCRIPT_URL: "https://git-server.innoforce.kz/innopay/innoforce-ci-scripts/raw/v2.4"
+  COUNTRY: ${COUNTRY}
+
+stages:          # List of stages for jobs, and their order of execution
+  - test
+  - move-task-to-ready
+  - build
+  - move-task-to-test
+
+cache:
+  paths:
+    - .gradle/wrapper
+    - .gradle/caches
+
+# Это называется YAML anchor. Ну или .gitlab-ci.yml anchor
+# Позволяет избежать дублирования настроек, что-то вроде наследования
+.branches_template: &branches_template
+  before_script:
+    - if [[ -n ${BUILD_FROM_COMMIT} ]]; then ENVIRONMENT=BETA; fi
+    - export GRADLE_USER_HOME=$CI_PROJECT_DIR/.gradle
+    - if [ $[ $RANDOM % 7 ] == 0 ]; then rm -rf "$CI_PROJECT_DIR/.gradle/caches/*" "$CI_PROJECT_DIR/.gradle/wrapper/*" && echo 'Cleaning mvn cache!!!'; fi
+    - ENVIRONMENT=$(echo "$CI_COMMIT_REF_NAME" | tr a-z A-Z)
+    - if [[ "$ENVIRONMENT" = ALPHA ]]; then ENVIRONMENT=ALPHA; BASE_URL=https://api.alpha.avtobys.kz; fi
+    - if [[ "$ENVIRONMENT" = BETA ]]; then ENVIRONMENT=BETA; BASE_URL=https://api.beta.avtobys.kz; fi
+    - if [[ "$ENVIRONMENT" = PROD ]]; then ENVIRONMENT=PROD; BASE_URL=https://api.avtobys.kz; fi
+    - if [[ -n ${BUILD_FROM_COMMIT} ]]; then ENVIRONMENT=BETA; git reset --hard; git checkout ${BUILD_FROM_COMMIT}; fi ## to build any commit
+    - if [[ -n ${BUILD_FROM_COMMIT} ]]; then ENVIRONMENT=PROD; git reset --hard; git checkout ${BUILD_FROM_COMMIT}; fi ## to build any commit
+    - sed -i "s;COUNTRY_VALUE;${COUNTRY};g" app/build.gradle.kts
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;APPLICATION_ID;kz.avtobys.driverboard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;APPLICATION_ID;ky.eldikpay.driverboard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;APPLICATION_NAME;Avtobys-driverBoard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;APPLICATION_NAME;Eldikpay-driverBoard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;LAUNCHER_ICON;@drawable/ic_launcher_kz;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;LAUNCHER_ICON;@mipmap/ic_launcher_ky;g" app/build.gradle.kts; fi
+    - cat app/build.gradle.kts
+    - ls .
+    - ENVIRONMENT_LOWERCASE=$(echo "$ENVIRONMENT" | tr A-Z a-z)
+    - ENVIRONMENT_FIRST_LETTER_UPPER="${ENVIRONMENT_LOWERCASE^}"
+    - chmod +x ./gradlew
+  only:
+    - alpha
+    - beta
+    - prod
+  tags:
+    - android
+  allow_failure: false
+
+
+# This job also runs in the test stage.
+test:
+  <<: *branches_template
+  stage: test    # It can run at the same time as unit-test-job (in parallel).
+  when: always
+  script:
+    - echo "sdk.dir="$ANDROID_HOME > local.properties
+    - sed -i "s;COUNTRY_VALUE;${COUNTRY};g" app/build.gradle.kts
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;APPLICATION_ID;kz.avtobys.driverboard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;APPLICATION_ID;ky.eldikpay.driverboard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;APPLICATION_NAME;Avtobys-driverBoard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;APPLICATION_NAME;Eldikpay-driverBoard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;LAUNCHER_ICON;@drawable/ic_launcher_kz;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;LAUNCHER_ICON;@mipmap/ic_launcher_ky;g" app/build.gradle.kts; fi
+    - cat app/build.gradle.kts
+    - ./gradlew clean
+    - ./gradlew assembleDevDebug
+  allow_failure: false
+  except:
+    - alpha
+    - beta
+    - prod
+    - tags
+  tags:
+    - docker
+    - android
+  image: ghcr.io/cirruslabs/android-sdk:34
+
+test-jira-task:
+  stage: test
+  script:
+    - echo ${CI_COMMIT_REF_NAME} ${CI_PROJECT_NAME} ${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}
+    - wget -O - "${CI_SCRIPT_URL}/test-jira-task.sh" | bash -s AV ${CI_COMMIT_REF_NAME} ${CI_PROJECT_NAME} ${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}
+  when: always
+  allow_failure: false
+  except:
+    - alpha
+    - beta
+    - prod
+  only:
+    - merge_requests
+  tags:
+    - ansible
+
+move-task-to-ready:
+  stage: move-task-to-ready
+  when: always
+  <<: *branches_template
+  script:
+    - wget -O - "${CI_SCRIPT_URL}/move-task-to-ready.sh" | bash -s AV $CI_COMMIT_REF_NAME
+  tags:
+    - ansible
+
+build:
+  stage: build
+  <<: *branches_template
+  script:
+    - echo "The value of COUNTRY is $COUNTRY"
+    - sed -i "s;COUNTRY_VALUE;${COUNTRY};g" app/build.gradle.kts
+    - sed -i "s;CLIENT_SECRET_VALUE;${CLIENT_SECRET};g" app/build.gradle.kts
+    - sed -i "s;PASS_SECRET_VALUE;${PASS_SECRET};g" app/build.gradle.kts
+    - sed -i "s;OAUTH_API_BASE_URL_VALUE;${OAUTH_API_BASE_URL};g" app/build.gradle.kts
+    - sed -i "s;CHECK_BUS_STATE_SEC_VALUE;${CHECK_BUS_STATE_SEC};g" app/build.gradle.kts
+    - sed -i "s;REQUEST_BUS_INFO_INTERVAL_SEC_VALUE;${REQUEST_BUS_INFO_INTERVAL_SEC};g" app/build.gradle.kts
+    - sed -i "s;CASH_QUEUE_STORAGE_TIME_DAYS_VALUE;${CASH_QUEUE_STORAGE_TIME_DAYS};g" app/build.gradle.kts
+    - sed -i "s;CASH_QUEUE_PROCESSING_PERIOD_MS_VALUE;${CASH_QUEUE_PROCESSING_PERIOD_MS};g" app/build.gradle.kts
+    - sed -i "s;EXPORTED_ZIP_FILE_PASSWORD_VALUE;${EXPORTED_ZIP_FILE_PASSWORD};g" app/build.gradle.kts
+    - sed -i "s;UPDATE_TRACKING_MONITORING_INTERVAL_SEC_VALUE;${UPDATE_TRACKING_MONITORING_INTERVAL_SEC};g" app/build.gradle.kts
+    - sed -i "s;DISPATCHER_MQTT_USER_VALUE;${DISPATCHER_MQTT_USER};g" app/build.gradle.kts
+    - sed -i "s;DISPATCHER_MQTT_PASSWORD_VALUE;${DISPATCHER_MQTT_PASSWORD};g" app/build.gradle.kts
+    - sed -i "s;DISPATCHER_MQTT_SERVER_URLS_VALUE;${DISPATCHER_MQTT_SERVER_URLS};g" app/build.gradle.kts
+    - sed -i "s;MQTT_USER_VALUE;${MQTT_USER};g" app/build.gradle.kts
+    - sed -i "s;MQTT_PASSWORD_VALUE;${MQTT_PASSWORD};g" app/build.gradle.kts
+    - sed -i "s;MQTT_SERVER_URLS_VALUE;${MQTT_SERVER_URLS};g" app/build.gradle.kts
+
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;APPLICATION_ID;kz.avtobys.driverboard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;APPLICATION_ID;ky.eldikpay.driverboard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;APPLICATION_NAME;Avtobys-driverBoard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;APPLICATION_NAME;Eldikpay-driverBoard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;LAUNCHER_ICON;@drawable/ic_launcher_kz;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;LAUNCHER_ICON;@mipmap/ic_launcher_ky;g" app/build.gradle.kts; fi
+    - cat app/build.gradle.kts
+
+    - export GRADLE_USER_HOME=`pwd`/.gradle
+    - echo "sdk.dir="$ANDROID_HOME > local.properties
+    - ./gradlew clean
+    - ./gradlew assemble${ENVIRONMENT_FIRST_LETTER_UPPER}Debug
+    - if [[ $COUNTRY == "KK" ]]; then /opt/android-sdk-linux/build-tools/34.0.0/apksigner sign --ks keystore/release-keystore.jks --ks-key-alias china-system-rom-key --ks-pass env:'GITLAB_KEYSTORE_PASS' --key-pass env:'GITLAB_KEY_PASS' --out kotlin-driver-board-${ENVIRONMENT}-${CI_COMMIT_REF_NAME}-kz.apk app/build/outputs/apk/${ENVIRONMENT_LOWERCASE}/debug/app-${ENVIRONMENT_LOWERCASE}-debug.apk; fi
+    - if [[ $COUNTRY == "KY" ]]; then /opt/android-sdk-linux/build-tools/34.0.0/apksigner sign --ks keystore/release-keystore-ky.jks --ks-key-alias kyrgyz-system-rom-key --ks-pass env:'GITLAB_KEYSTORE_PASS' --key-pass env:'GITLAB_KEY_PASS' --out kotlin-driver-board-${ENVIRONMENT}-${CI_COMMIT_REF_NAME}-ky.apk app/build/outputs/apk/${ENVIRONMENT_LOWERCASE}/debug/app-${ENVIRONMENT_LOWERCASE}-debug.apk; fi
+    - scripts/innoforce-log-tag-extractor.sh
+    - ls .
+  artifacts:
+    expire_in: 90 days
+    paths:
+      - ./*apk
+      - ./innoforce_log_messages.txt
+  image: ghcr.io/cirruslabs/android-sdk:34
+  when: manual
+  retry: 2
+
+move-task-to-test:
+  stage: move-task-to-test
+  when: on_success
+  <<: *branches_template
+  script:
+    - wget -O - "${CI_SCRIPT_URL}/move-task-to-test.sh" | bash -s AV $ENVIRONMENT
+  tags:
+    - ansible
+
+build-prod:
+  stage: build
+  script:
+    - echo "The value of COUNTRY is $COUNTRY"
+    - sed -i "s;COUNTRY_VALUE;${COUNTRY};g" app/build.gradle.kts
+    - sed -i "s;CLIENT_SECRET_PROD;${CLIENT_SECRET_PROD};g" app/build.gradle.kts
+    - sed -i "s;PASS_SECRET_PROD;${PASS_SECRET_PROD};g" app/build.gradle.kts
+    - sed -i "s;OAUTH_API_BASE_URL_PROD;${OAUTH_API_BASE_URL_PROD};g" app/build.gradle.kts
+    - sed -i "s;CHECK_BUS_STATE_SEC_PROD_VALUE;${CHECK_BUS_STATE_SEC_PROD};g" app/build.gradle.kts
+    - sed -i "s;REQUEST_BUS_INFO_INTERVAL_SEC_PROD_VALUE;${REQUEST_BUS_INFO_INTERVAL_SEC_PROD};g" app/build.gradle.kts
+    - sed -i "s;CASH_QUEUE_STORAGE_TIME_DAYS_VALUE;${CASH_QUEUE_STORAGE_TIME_DAYS};g" app/build.gradle.kts
+    - sed -i "s;CASH_QUEUE_PROCESSING_PERIOD_MS_VALUE;${CASH_QUEUE_PROCESSING_PERIOD_MS};g" app/build.gradle.kts
+    - sed -i "s;EXPORTED_ZIP_FILE_PASSWORD_VALUE;${EXPORTED_ZIP_FILE_PASSWORD};g" app/build.gradle.kts
+    - sed -i "s;UPDATE_TRACKING_MONITORING_INTERVAL_SEC_PROD_VALUE;${UPDATE_TRACKING_MONITORING_INTERVAL_SEC_PROD};g" app/build.gradle.kts
+    - sed -i "s;DISPATCHER_MQTT_USER_PROD_VALUE;${DISPATCHER_MQTT_USER_PROD};g" app/build.gradle.kts
+    - sed -i "s;DISPATCHER_MQTT_PASSWORD_PROD_VALUE;${DISPATCHER_MQTT_PASSWORD_PROD};g" app/build.gradle.kts
+    - sed -i "s;DISPATCHER_MQTT_SERVER_URLS_PROD_VALUE;${DISPATCHER_MQTT_SERVER_URLS_PROD};g" app/build.gradle.kts
+    - sed -i "s;MQTT_USER_PROD_VALUE;${MQTT_USER_PROD};g" app/build.gradle.kts
+    - sed -i "s;MQTT_PASSWORD_PROD_VALUE;${MQTT_PASSWORD_PROD};g" app/build.gradle.kts
+    - sed -i "s;MQTT_SERVER_URLS_PROD_VALUE;${MQTT_SERVER_URLS_PROD};g" app/build.gradle.kts
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;APPLICATION_ID;kz.avtobys.driverboard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;APPLICATION_ID;ky.eldikpay.driverboard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;APPLICATION_NAME;Avtobys-driverBoard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;APPLICATION_NAME;Eldikpay-driverBoard;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KK" ]]; then sed -i "s;LAUNCHER_ICON;@drawable/ic_launcher_kz;g" app/build.gradle.kts; fi
+    - if [[ $COUNTRY == "KY" ]]; then sed -i "s;LAUNCHER_ICON;@mipmap/ic_launcher_ky;g" app/build.gradle.kts; fi
+    - cat app/build.gradle.kts
+
+    - export GRADLE_USER_HOME=`pwd`/.gradle
+    - echo "sdk.dir="$ANDROID_HOME > local.properties
+    - ./gradlew clean
+    - ./gradlew assembleProdRelease
+    - if [[ $COUNTRY == "KK" ]]; then /opt/android-sdk-linux/build-tools/34.0.0/apksigner sign --ks keystore/release-keystore.jks --ks-key-alias china-system-rom-key --ks-pass env:'GITLAB_KEYSTORE_PASS' --key-pass env:'GITLAB_KEY_PASS' --out kotlin-driver-board-prod-${CI_COMMIT_REF_NAME}-signed-kz.apk app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk; fi
+    - if [[ $COUNTRY == "KY" ]]; then /opt/android-sdk-linux/build-tools/34.0.0/apksigner sign --ks keystore/release-keystore-ky.jks --ks-key-alias kyrgyz-system-rom-key --ks-pass env:'GITLAB_KEYSTORE_PASS' --key-pass env:'GITLAB_KEY_PASS' --out kotlin-driver-board-prod-${CI_COMMIT_REF_NAME}-signed-ky.apk app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk; fi
+    - scripts/innoforce-log-tag-extractor.sh
+    - ls .
+  artifacts:
+    expire_in: 90 days
+    paths:
+      - ./*apk
+      - ./innoforce_log_messages.txt
+  image: ghcr.io/cirruslabs/android-sdk:34
+  when: manual
+  retry: 2
+  tags:
+    - docker
+    - android
+  allow_failure: false
+  only:
+    - tags
